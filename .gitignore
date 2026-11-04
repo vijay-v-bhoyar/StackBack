@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.gstack/
+.vscode/
+test-results/
+playwright-report/
+*.local
+
+# Local workflow records and recording preparation
+/docs/hackathon/
+/devpost-submission.md
+/.devpost-hackathon-state.json
+/assets/demo/
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+
+# One-off local diagnostics and recording helpers
+/scripts/diagnose-boundary.mjs
+/scripts/prepare-media.mjs
