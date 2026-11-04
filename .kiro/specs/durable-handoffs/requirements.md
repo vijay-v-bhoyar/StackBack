@@ -1,0 +1,11 @@
+# Durable handoffs - requirements
+
+Codex-authored input for the owner-authorized C-03 correction. Kiro authors design, task breakdown, regression tests and the bounded domain/storage implementation; Codex verifies and integrates UI/worker changes.
+
+1. Canonical portability: every new stored run and accepted handoff must be valid when encoded as the application's pretty-printed schema-v1 JSON, at most 1,048,576 UTF-8 bytes. Compact input must not bypass the canonical output limit. A permitted note edit that exceeds capacity must not replace the last valid saved checkpoint or claim Saved.
+2. Local recovery: an existing browser record with valid run fields/replay but canonical bytes above the portable limit must stay listed and resumable so a user can shorten its note. Do not delete or silently discard it. File import remains bounded. Add an explicit stored-record reader separate from portable validation.
+3. Session conflict protection: compare the complete expected saved Run against the current IndexedDB record in the same readwrite transaction. Existing guide revision checks remain unchanged. Create/import uses expected absence. A changed or missing expected run is a conflict. No timestamps-only check, implicit merge or overwrite.
+4. Preserve user choices: on conflict retain in-memory work, report Not saved, and offer export or save as a distinct new session copy. The newer original stays unchanged; original and alternate copy remain distinct. Main UI owns the expected checkpoint and advances it only after successful persistence.
+5. Compatibility: no schema migration, dependency change, original-test rewrite, relaxed limits, hidden data-loss workaround or cloud service. JSON files are unsigned and unencrypted; no authenticated-history claim.
+
+Independent browser regressions must cover a valid near-limit imported session + 1,000-character note, compact input with over-limit canonical form, legacy over-capacity stored-session recovery, and two stale tabs preserving the newer original plus a distinct alternate copy. Use synthetic fixtures and native Import activation. Preserve the existing 12 domain/15 browser tests and seeds11303/13003. Codex will run initial tests to establish actual red before authorizing implementation.

@@ -115,13 +115,31 @@ function requireRun(x: unknown): Run {
   requireGuide(x.guideSnapshot); replay(x as unknown as Run);
   return clone(x as unknown as Run);
 }
+/** Read an existing stored Run for listing or resumption.
+ *  Validates schema structure and replay integrity only.
+ *  Does NOT check canonical portable byte size — over-capacity legacy records are readable.
+ *  Use parsePackage for file import, which enforces canonical output size. */
+export function readStoredRun(input: unknown): Run {
+  return requireRun(input);
+}
+function canonicalPackageBytes(pkg: Package): number {
+  return new TextEncoder().encode(JSON.stringify(pkg, null, 2)).byteLength;
+}
 export function parsePackage(s: string): Package {
   if (new TextEncoder().encode(s).byteLength > MAX_FILE_BYTES) throw new Error('File is larger than 1 MiB.');
   let x: unknown;
   try { x = JSON.parse(s); } catch { throw new Error('File is not valid JSON.'); }
   if (!object(x) || x.schemaVersion !== 1) throw new Error('Unsupported file format or schema version.');
-  if (x.kind === 'stackback.guide' && keys(x, ['kind', 'schemaVersion', 'guide'])) return { kind: x.kind, schemaVersion: 1, guide: requireGuide(x.guide) };
-  if (x.kind === 'stackback.handoff' && keys(x, ['kind', 'schemaVersion', 'run'])) return { kind: x.kind, schemaVersion: 1, run: requireRun(x.run) };
+  if (x.kind === 'stackback.guide' && keys(x, ['kind', 'schemaVersion', 'guide'])) {
+    const pkg: Package = { kind: x.kind, schemaVersion: 1, guide: requireGuide(x.guide) };
+    if (canonicalPackageBytes(pkg) > MAX_FILE_BYTES) throw new Error('Guide canonical form is larger than 1 MiB.');
+    return pkg;
+  }
+  if (x.kind === 'stackback.handoff' && keys(x, ['kind', 'schemaVersion', 'run'])) {
+    const pkg: Package = { kind: x.kind, schemaVersion: 1, run: requireRun(x.run) };
+    if (canonicalPackageBytes(pkg) > MAX_FILE_BYTES) throw new Error('Handoff canonical form is larger than 1 MiB. Shorten the note and export again.');
+    return pkg;
+  }
   throw new Error('Unsupported file kind or fields.');
 }
 export function encodePackage(p: unknown): string {

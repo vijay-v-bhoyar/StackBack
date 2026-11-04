@@ -20,3 +20,7 @@ playwright-report/
 # One-off local diagnostics and recording helpers
 /scripts/diagnose-boundary.mjs
 /scripts/prepare-media.mjs
+
+# Private repair evidence and browser diagnostics
+/.loop/
+/debug.log

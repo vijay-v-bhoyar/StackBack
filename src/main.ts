@@ -1,11 +1,13 @@
 import './styles.css';
-import {type Guide,type Run,type Card,type Package,clone,validateGuide,canReadDraft,requireGuide,startRun,choose,stepBack,replay,parsePackage,encodePackage,MAX_FILE_BYTES} from './domain';
+import {type Guide,type Run,type Card,type Package,clone,validateGuide,canReadDraft,requireGuide,readStoredRun,startRun,choose,stepBack,replay,parsePackage,encodePackage,MAX_FILE_BYTES} from './domain';
 import {Store} from './storage';
 import {sample,SAMPLE_ID} from './sample';
+import {stackOutline,compareStacks} from './stack';
 
 const store=new Store();
-let guides:Guide[]=[],runs:Run[]=[],view:'library'|'editor'|'runner'='library';
+let guides:Guide[]=[],runs:Run[]=[],view:'library'|'editor'|'runner'|'stack'='library';
 let draft:Guide|undefined,expectedRevision:string|undefined,currentRun:Run|undefined;
+let savedRun:Run|undefined,stackGuide:Guide|undefined,stackCardId='';
 let dirty=false,saveStatus='',error='',issues= [] as ReturnType<typeof validateGuide>,showHistory=false;
 let offline='Preparing offline access',waiting:ServiceWorker|undefined;
 let busy=false;
@@ -29,7 +31,7 @@ function message(e:unknown){return e instanceof Error?e.message:'The action coul
 function stamp(s:string){return new Date(s).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}
 function focusHeading(){requestAnimationFrame(()=>document.querySelector<HTMLElement>('main h1')?.focus())}
 function updateStatus(){const n=document.querySelector('#save-status');if(n){n.textContent=saveStatus;n.className='save-status'+(dirty?' unsaved':'')}}
-function changed(){dirty=true;saveStatus='Not saved — save your changes or export a backup.';updateStatus();if(view==='editor'){const start=document.querySelector<HTMLButtonElement>('#start-draft');if(start)start.disabled=validateGuide(draft).length>0}}
+function changed(){dirty=true;const invalid=view==='editor'&&validateGuide(draft).length>0;saveStatus=invalid?'Not saved — save the draft locally. Correct its routes before exporting.':'Not saved — save your changes or export a backup.';updateStatus();if(view==='editor'){const start=document.querySelector<HTMLButtonElement>('#start-draft');if(start)start.disabled=invalid}}
 function field(label:string,id:string,value:string,onChange:(s:string)=>void,max:number,multiline=false){
  const input=multiline?el('textarea',{id,maxlength:String(max)}):el('input',{id,type:'text',maxlength:String(max)});
  input.value=value;input.oninput=()=>{onChange(input.value);changed()};
@@ -44,14 +46,14 @@ async function refresh(){
   const rawGuides=await store.list<Guide>('guides'),rawRuns=await store.list<Run>('runs');
   guides=[];runs=[];let corrupt=0;
   for(const g of rawGuides){if(canReadDraft(g))guides.push(g);else corrupt++}
-  for(const r of rawRuns){try{parsePackage(encodePackage({kind:'stackback.handoff',schemaVersion:1,run:r}));runs.push(r)}catch{corrupt++}}
+  for(const r of rawRuns){try{runs.push(readStoredRun(r))}catch{corrupt++}}
   if(!guides.some(g=>g.id===SAMPLE_ID)){const g=sample();await store.saveGuide(g);guides.unshift(g)}
   if(corrupt)error=corrupt+' local record(s) could not be read safely. Original data is retained in browser storage.';
  }catch(e){error=message(e);if(!guides.length)guides=[sample()]}
 }
 async function library(){
- if(dirty&&!confirm('Leave this view with unsaved changes? Saved records remain; export a backup before leaving if you need this work.'))return;
- view='library';draft=undefined;currentRun=undefined;dirty=false;saveStatus='';issues=[];error='';await refresh();render();focusHeading();
+ if(dirty&&!confirm('Leave this view with unsaved changes? Save locally or export valid work before leaving if you need to keep it. Saved records remain.'))return;
+ view='library';draft=undefined;currentRun=undefined;savedRun=undefined;dirty=false;saveStatus='';issues=[];error='';await refresh();render();focusHeading();
 }
 function edit(g?:Guide,copy=false){
  const base=g?clone(g):{id:crypto.randomUUID(),revisionId:crypto.randomUUID(),title:'Untitled guide',description:'',startCardId:'first',updatedAt:new Date().toISOString(),cards:[{id:'first',title:'First card',body:'Describe the next step.',kind:'terminal' as const,choices:[],outcome:'Complete'}]};
@@ -65,16 +67,18 @@ async function saveDraft(asCopy=false):Promise<boolean>{
  candidate.revisionId=crypto.randomUUID();candidate.updatedAt=new Date().toISOString();
  saveStatus='Saving…';updateStatus();
  try{await store.saveGuide(candidate,expectedRevision);draft=candidate;expectedRevision=candidate.revisionId;dirty=false;saveStatus='Saved on this device · '+stamp(candidate.updatedAt);error='';guides=guides.filter(g=>g.id!==candidate.id);guides.push(clone(candidate));render();return true}
- catch(e){dirty=true;error=message(e);saveStatus='Not saved — keep editing, retry or export a backup.';render();return false}
+ catch(e){dirty=true;error=message(e);saveStatus=validateGuide(draft).length?'Not saved — keep this draft open and retry storage. Correct its routes before exporting.':'Not saved — keep editing, retry or export a backup.';render();return false}
 }
 async function persistRun(){
  if(!currentRun)return;
  saveStatus='Saving…';updateStatus();
- try{await store.saveRun(currentRun);dirty=false;saveStatus='Saved on this device · '+stamp(currentRun.updatedAt);error='';runs=runs.filter(r=>r.id!==currentRun!.id);runs.unshift(clone(currentRun))}
- catch(e){dirty=true;saveStatus='Not saved — this session is temporary. Export a handoff backup.';error=message(e)}
+ try{await store.saveRun(currentRun,savedRun);savedRun=clone(currentRun);dirty=false;saveStatus='Saved on this device · '+stamp(currentRun.updatedAt);error='';runs=runs.filter(r=>r.id!==currentRun!.id);runs.unshift(clone(currentRun))}
+ catch(e){dirty=true;error=message(e);saveStatus=portableIssue(currentRun)?'Not saved — shorten the note to fit the portable handoff limit. The last saved checkpoint is unchanged.':error.includes('another tab')?'Not saved — session conflict with another tab. Export this work or save it as a new copy.':'Not saved — this session is temporary. Export a handoff backup.'}
 }
-async function begin(g:Guide){currentRun=startRun(g);view='runner';draft=undefined;showHistory=false;error='';dirty=true;await persistRun();render();focusHeading()}
-function resume(r:Run){currentRun=clone(r);replay(currentRun);view='runner';draft=undefined;showHistory=false;dirty=false;error='';saveStatus='Loaded saved session · '+stamp(r.updatedAt);render();focusHeading()}
+function portableIssue(r:Run){try{encodePackage({kind:'stackback.handoff',schemaVersion:1,run:r});return ''}catch(e){return message(e)}}
+async function begin(g:Guide){currentRun=startRun(g);savedRun=undefined;view='runner';draft=undefined;showHistory=false;error='';dirty=true;await persistRun();render();focusHeading()}
+function resume(r:Run){currentRun=clone(r);savedRun=clone(r);replay(currentRun);view='runner';draft=undefined;showHistory=false;dirty=false;error='';saveStatus='Loaded saved session · '+stamp(r.updatedAt);render();focusHeading()}
+async function saveSessionCopy(){if(!currentRun)return;const previous=currentRun,checkpoint=savedRun;currentRun=clone(previous);currentRun.sourceRunId=previous.sourceRunId||previous.id;currentRun.id=crypto.randomUUID();savedRun=undefined;await persistRun();if(dirty){currentRun=previous;savedRun=checkpoint}render()}
 async function transition(kind:'choose'|'back',id=''){if(!currentRun)return;currentRun=kind==='choose'?choose(currentRun,id):stepBack(currentRun);dirty=true;await persistRun();render();focusHeading()}
 function download(p:Package,name:string){const data=encodePackage(p),blob=new Blob([data],{type:'application/json'}),url=URL.createObjectURL(blob),a=el('a',{href:url,download:name});a.click();setTimeout(()=>URL.revokeObjectURL(url),2000)}
 function exportGuide(g:Guide){download({kind:'stackback.guide',schemaVersion:1,guide:requireGuide(g)},'stackback-guide.json')}
@@ -88,7 +92,7 @@ function render(){
  const main=el('main',{class:'main',id:'main'});
  if(error)main.append(el('div',{class:'banner',role:'alert'},error));
  main.append(el('div',{id:'save-status',class:'save-status'+(dirty?' unsaved':''),role:'status','aria-live':'polite'},saveStatus));
- if(view==='library')renderLibrary(main);else if(view==='editor')renderEditor(main);else renderRunner(main);
+  if(view==='library')renderLibrary(main);else if(view==='editor')renderEditor(main);else if(view==='stack')renderStack(main);else renderRunner(main);
  main.append(el('footer',{class:'footnote'},el('span',{},'Linked-card guides, brought back for handoffs.'),el('span',{},'Device only · No account · v0.1')));
  app.replaceChildren(header,file,main);
  if(busy)lockControls();
@@ -100,19 +104,38 @@ function renderLibrary(main:HTMLElement){
  const grid=el('div',{class:'grid'});
  for(const g of guides){const invalid=validateGuide(g).length>0;const article=el('article',{class:'panel guide'},el('div',{},el('span',{class:'tag'},invalid?'Draft needs correction':g.id===SAMPLE_ID?'Fictional sample':'Your guide')),el('h2',{},g.title||'Untitled guide'),el('p',{},g.description||'A local branching guide.'),el('div',{class:'metadata'},g.cards.length+' cards · revision '+g.revisionId.slice(0,8)));
  const start=button('Start guide',()=>begin(g),'primary');start.disabled=invalid;
- article.append(el('div',{class:'actions'},start,button(g.id===SAMPLE_ID?'Edit a copy':'Edit guide',()=>edit(g,g.id===SAMPLE_ID))));
+  const explore=button('Explore stack',()=>{stackGuide=clone(g);stackCardId=g.startCardId;view='stack';saveStatus='';error='';render();focusHeading()},'tertiary');explore.disabled=invalid;
+  article.append(el('div',{class:'actions'},start,button(g.id===SAMPLE_ID?'Edit a copy':'Edit guide',()=>edit(g,g.id===SAMPLE_ID)),explore));
  if(g.id!==SAMPLE_ID)article.append(el('div',{class:'actions metadata'},button('Duplicate guide',()=>edit(g,true),'tertiary'),button('Export guide',()=>exportGuide(g),'tertiary')));
  grid.append(article)}
  main.append(grid,el('div',{class:'section-head'},el('h2',{},'Saved sessions'),el('span',{class:'muted'},'Return to the exact guide snapshot')));
  if(!runs.length)main.append(el('div',{class:'empty'},'No saved sessions yet. Start a guide to keep your place on this device.'));
- else{const sessionGrid=el('div',{class:'grid'});for(const r of [...runs].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))){const state=replay(r);sessionGrid.append(el('article',{class:'panel'},el('span',{class:'tag'},r.sourceRunId?'Imported copy':'Local session'),el('h3',{},r.guideSnapshot.title),el('p',{},state.current.title),el('p',{class:'metadata'},stamp(r.updatedAt)+' · '+r.id.slice(0,8)),button('Resume session',()=>resume(r),'primary')))}main.append(sessionGrid)}
+  else{const sessionGrid=el('div',{class:'grid'});for(const r of [...runs].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))){const state=replay(r),article=el('article',{class:'panel'},el('span',{class:'tag'},r.sourceRunId?'Imported copy':'Local session'),el('h3',{},r.guideSnapshot.title),el('p',{},state.current.title),el('p',{class:'metadata'},stamp(r.updatedAt)+' · '+r.id.slice(0,8)),button('Resume session',()=>resume(r),'primary'));if(portableIssue(r))article.append(el('span',{class:'tag amber'},'Over-capacity — shorten note to export'),el('p',{class:'hint'},'Your stored record is retained and can be resumed to shorten its note.'));sessionGrid.append(article)}main.append(sessionGrid)}
  main.append(el('details',{class:'panel',style:'margin-top:28px'},el('summary',{},'How local handoffs work'),el('ol',{class:'help-list'},el('li',{},'The guide author defines the route. StackBack follows those choices deterministically.'),el('li',{},'Each session keeps an immutable guide snapshot. Later guide edits do not rewrite an existing session.'),el('li',{},'Export a handoff file, transfer it yourself, then preview and import it as a new local copy.'),el('li',{},'Files are editable, unsigned and unencrypted. Avoid personal or sensitive notes.'),el('li',{},'Offline access needs one completed online preparation. Export backups before clearing browser data.'))));
+}
+function renderStack(main:HTMLElement){
+ if(!stackGuide)return;const g=stackGuide,current=g.cards.find(c=>c.id===stackCardId)??g.cards[0];
+ const show=(id:string)=>{stackCardId=id;render();requestAnimationFrame(()=>document.querySelector<HTMLElement>('#stack-card-title')?.focus())};
+ main.append(el('div',{class:'eyebrow'},'Linked-card workbench'),heading(g.title+' · card stack'),el('p',{class:'hint'},'Stack preview — no session is being recorded.'),el('div',{class:'actions'},button('Start this stack',()=>begin(g),'primary'),button('Edit this stack',()=>{edit(g,g.id===SAMPLE_ID);requestAnimationFrame(()=>document.getElementById('title-'+current.id)?.focus())},'secondary')));
+ const paper=el('section',{class:'paper stack-preview','aria-labelledby':'stack-card-title'},el('span',{class:'tag'},current.kind==='terminal'?'Outcome card':'Linked card'),el('h2',{id:'stack-card-title',tabindex:'-1'},current.title),el('p',{},current.body));
+ for(const choice of current.choices)paper.append(button('Follow: '+choice.label,()=>show(choice.to),'choice'));
+ if(current.kind==='terminal')paper.append(el('p',{class:'complete'},current.outcome));
+ main.append(paper,el('h2',{},'Stack connections'),el('p',{class:'hint'},'Select any card to inspect it. Links show where each choice leads; starting a session keeps a separate frozen copy.'));
+ const grid=el('section',{class:'stack-index','aria-label':'Card connection map'});
+ for(const {card,depth}of stackOutline(g)){
+  const node=el('article',{class:'stack-node'+(card.id===current.id?' selected':'')},el('span',{class:'eyebrow'},'Level '+(depth+1)+' · '+(card.kind==='terminal'?'Outcome':'Decision')),button('Open card: '+card.title,()=>show(card.id),'tertiary'));
+  for(const choice of card.choices)node.append(el('p',{class:'hint'},choice.label+' → '+g.cards.find(c=>c.id===choice.to)!.title));
+  grid.append(node);
+ }main.append(grid);
 }
 function renderEditor(main:HTMLElement){
  if(!draft)return;const d=draft;
  main.append(el('div',{class:'eyebrow'},'Guide studio'),el('div',{class:'editor-head'},heading('Shape a guide.'),el('div',{class:'actions'},button('Save guide',()=>saveDraft(),'primary'),button('Save as new copy',()=>saveDraft(true),'tertiary'))));
  const body=el('div',{class:'editor-grid'}),form=el('div',{}),side=el('aside',{class:'panel validation','aria-label':'Guide validation'});
- form.append(el('div',{class:'panel'},field('Guide title','guide-title',d.title,v=>d.title=v,100),field('Guide description','guide-description',d.description,v=>d.description=v,500,true),picker('Start card','start-card',d.cards.map(c=>[c.id,c.title]),d.startCardId,v=>d.startCardId=v)));
+  form.append(el('div',{class:'panel'},field('Guide title','guide-title',d.title,v=>d.title=v,100),field('Guide description','guide-description',d.description,v=>d.description=v,500,true),picker('Start card','start-card',d.cards.map(c=>[c.id,c.title]),d.startCardId,v=>d.startCardId=v)));
+  const map=el('details',{class:'panel'},el('summary',{},'Card stack map'));
+  for(const {card,depth}of stackOutline(d))map.append(button((depth<0?'Unreachable':('Level '+(depth+1)))+' · '+(card.title||'Untitled card'),()=>{const field=document.getElementById('title-'+card.id);field?.scrollIntoView({block:'center'});field?.focus()},'tertiary'));
+  form.append(map);
  d.cards.forEach((c,index)=>{
   const card=el('section',{class:'card-editor',id:'card-'+c.id},el('div',{class:'card-head'},el('h2',{},'Card '+(index+1)),button('Remove card '+(index+1),()=>{if(confirm('Remove this draft card? Links to it will need correction.')){d.cards=d.cards.filter(x=>x.id!==c.id);changed();render()}},'tertiary')));
   card.append(field('Card '+(index+1)+' title','title-'+c.id,c.title,v=>c.title=v,100),field('Card '+(index+1)+' body','body-'+c.id,c.body,v=>c.body=v,2000,true),picker('Card '+(index+1)+' type','kind-'+c.id,[['step','Step with choices'],['terminal','Terminal outcome']],c.kind,v=>{c.kind=v as Card['kind'];if(v==='terminal'){c.choices=[];c.outcome='Routing complete.'}else{delete c.outcome;c.choices=[]}render()}));
@@ -133,7 +156,17 @@ function renderEditor(main:HTMLElement){
 }
 function renderRunner(main:HTMLElement){
  if(!currentRun)return;const r=currentRun,{path,current}=replay(r),g=r.guideSnapshot;
- main.append(el('div',{class:'revision'},el('span',{class:'tag'},r.sourceRunId?'Imported session copy':'Guided session'),el('span',{},g.title+' · snapshot '+g.revisionId.slice(0,8))),el('div',{class:'back-row actions'},button('Previous card',()=>transition('back'),'secondary'),button('Export handoff',exportRun,'tertiary')));
+  main.append(el('div',{class:'revision'},el('span',{class:'tag'},r.sourceRunId?'Imported session copy':'Guided session'),el('span',{},g.title+' · snapshot '+g.revisionId.slice(0,8))),el('div',{class:'back-row actions'},button('Previous card',()=>transition('back'),'secondary'),button('Export handoff',exportRun,'tertiary')));
+  if(dirty)main.append(button('Save session as new copy',saveSessionCopy,'tertiary'));
+  if(portableIssue(r)&&!error)main.append(el('div',{class:'banner',role:'alert'},'This session is retained locally but exceeds the portable handoff limit. Shorten its note and save before exporting.'));
+  const latest=guides.find(guide=>guide.id===g.id);
+  if(latest&&latest.revisionId!==g.revisionId){
+   const diff=compareStacks(g,latest),comparison=el('details',{class:'panel version-comparison','aria-label':'Guide version comparison'},el('summary',{},'Compare guide versions'),el('p',{},'This session remains on snapshot '+g.revisionId.slice(0,8)+'. Library revision '+latest.revisionId.slice(0,8)+' is separate.'));
+   if(diff.guideDetailsChanged)comparison.append(el('p',{},'Guide title, description or start card changed.'));
+   for(const change of diff.changes){const item=el('section',{},el('h3',{},change.kind+': '+(change.after?.title??change.before?.title)));for(const [label,card,guide]of [['Session snapshot',change.before,g],['Current library',change.after,latest]]as const)if(card)item.append(el('p',{},label+': '+card.title+' · '+card.body+' · '+(card.outcome??card.choices.map(ch=>ch.label+' → '+(guide.cards.find(c=>c.id===ch.to)?.title??'Removed card')).join('; '))));comparison.append(item)}
+   if(!diff.guideDetailsChanged&&!diff.changes.length)comparison.append(el('p',{},'The revision changed; card contents are unchanged.'));
+   main.append(el('p',{class:'version-notice'},'Library guide has a newer revision.'),comparison);
+  }
  main.querySelectorAll<HTMLButtonElement>('button').forEach(b=>{if(b.textContent==='Previous card')b.disabled=path.length<2});
  const rail=el('aside',{class:'rail','aria-label':'Active route'},el('div',{class:'eyebrow'},'Active path'));
  const list=el('ol',{});for(const id of path)list.append(el('li',{class:id===current.id?'current':''},g.cards.find(c=>c.id===id)!.title));rail.append(list,el('p',{class:'hint'},'Earlier corrected choices remain in session history.'),button(showHistory?'Hide session history':'Show session history',()=>{showHistory=!showHistory;render()},'tertiary'));
@@ -173,10 +206,15 @@ async function applyUpdate(){
  catch(e){applyingUpdate=false;throw e}
 }
 function syncOffline(){const n=document.querySelector('[data-testid=offline-status]');if(n)n.textContent=offline;if(waiting&&!busy&&view==='library')render()}
+function confirmOffline(worker:ServiceWorker){return new Promise<void>((resolve,reject)=>{
+ const channel=new MessageChannel(),timer=setTimeout(()=>{channel.port1.close();reject(new Error('Offline cache verification timed out.'))},7000);
+ channel.port1.onmessage=event=>{clearTimeout(timer);channel.port1.close();event.data?.ready===true?resolve():reject(new Error('The offline shell could not be prepared.'))};
+ worker.postMessage('PREPARE_CACHE',[channel.port2]);
+})}
 async function prepareOffline(){
  if(!('serviceWorker'in navigator)){offline='Offline access unavailable';syncOffline();return}
  try{
-  const reg=await navigator.serviceWorker.register('/sw.js');
+   const reg=await navigator.serviceWorker.register(new URL('sw.js',document.baseURI));
   function update(){if(reg.waiting){waiting=reg.waiting;syncOffline()}}
   const ready=new Promise<void>((resolve,reject)=>{
    if(reg.active){resolve();return}
@@ -185,8 +223,8 @@ async function prepareOffline(){
    setTimeout(()=>reject(new Error('Offline preparation timed out.')),15000);
   });
   update();reg.addEventListener('updatefound',()=>reg.installing?.addEventListener('statechange',update));
-  await ready;offline='Offline ready';syncOffline();
-  navigator.serviceWorker.addEventListener('controllerchange',()=>{if(applyingUpdate)reloadUpdated();else{offline='Offline ready';syncOffline()}});
+   await ready;if(!reg.active)throw new Error('No active offline worker.');await confirmOffline(reg.active);offline='Offline ready';syncOffline();
+   navigator.serviceWorker.addEventListener('controllerchange',()=>{if(applyingUpdate)reloadUpdated();else if(navigator.serviceWorker.controller){offline='Preparing offline access';syncOffline();void confirmOffline(navigator.serviceWorker.controller).then(()=>{offline='Offline ready';syncOffline()},()=>{offline='Offline not prepared — reload online to retry';syncOffline()})}});
  }catch{offline='Offline not prepared — reload online to retry';syncOffline()}
 }
 window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue=''}});

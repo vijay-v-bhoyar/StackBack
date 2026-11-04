@@ -1,4 +1,4 @@
-import {type Guide,type Run,clone} from './domain';
+import {type Guide,type Run,clone,MAX_FILE_BYTES} from './domain';
 export class StorageError extends Error {}
 export class Store {
  private db?:Promise<IDBDatabase>;
@@ -22,8 +22,34 @@ export class Store {
    tx.oncomplete=()=>resolve();tx.onabort=tx.onerror=()=>reject(new StorageError(conflict?'This guide changed in another tab. Reload the library or save as a new copy.':'Guide was not saved. Browser storage may be full or unavailable. Keep editing or export a backup.'));
   });
  }
- async saveRun(r:Run):Promise<void>{
-  const db=await this.open();return new Promise((resolve,reject)=>{const tx=db.transaction('runs','readwrite');tx.objectStore('runs').put(clone(r));tx.oncomplete=()=>resolve();tx.onabort=tx.onerror=()=>reject(new StorageError('Session was not saved. Browser storage may be full or unavailable. Export a handoff backup.'))});
+ async saveRun(r:Run,expected?:Run):Promise<void>{
+  // Pre-transaction canonical portability check.
+  // Must NOT call encodePackage (that calls parsePackage which would add the
+  // canonical check again — no infinite recursion in practice, but avoid the
+  // extra parse/validate round-trip). Use JSON.stringify + TextEncoder directly.
+  const canonical=JSON.stringify({kind:'stackback.handoff',schemaVersion:1,run:r},null,2);
+  if(new TextEncoder().encode(canonical).byteLength>MAX_FILE_BYTES){
+   throw new StorageError('Not saved — shorten the note to fit the portable handoff limit. The last saved checkpoint is unchanged.');
+  }
+  const db=await this.open();return new Promise((resolve,reject)=>{
+   const tx=db.transaction('runs','readwrite'),store=tx.objectStore('runs'),q=store.get(r.id);
+   let conflict=false;
+   q.onsuccess=()=>{
+    const current=q.result as Run|undefined;
+    if(expected===undefined){
+     // create / import path — expect no existing record (fresh UUID).
+     if(current!==undefined){conflict=true;tx.abort();return}
+    }else{
+     // update path — expect a specific existing record.
+     // Use compact JSON.stringify for full structural comparison.
+     // Do NOT require canonical portability of the stored old record;
+     // over-capacity legacy records are valid checkpoints for conflict detection.
+     if(current===undefined||JSON.stringify(current)!==JSON.stringify(expected)){conflict=true;tx.abort();return}
+    }
+    store.put(clone(r));
+   };
+   tx.oncomplete=()=>resolve();
+   tx.onabort=tx.onerror=()=>reject(new StorageError(conflict?'Session conflict: this session was changed in another tab.':'Session was not saved. Browser storage may be full or unavailable. Export a handoff backup.'));
+  });
  }
 }
-
