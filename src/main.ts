@@ -2,7 +2,9 @@ import './styles.css';
 import {type Guide,type Run,type Card,type Package,clone,validateGuide,canReadDraft,requireGuide,readStoredRun,startRun,choose,stepBack,replay,parsePackage,encodePackage,MAX_FILE_BYTES} from './domain';
 import {Store} from './storage';
 import {sample,SAMPLE_ID} from './sample';
-import {stackOutline,compareStacks} from './stack';
+import {stackOutline,compareStacks,guideMetadataChanges} from './stack';
+import {handoffBrief} from './brief';
+import {practiceGuide} from './practice';
 
 const store=new Store();
 let guides:Guide[]=[],runs:Run[]=[],view:'library'|'editor'|'runner'|'stack'='library';
@@ -29,7 +31,8 @@ function button(label:string,action:()=>void|Promise<unknown>,kind='secondary'):
 }
 function message(e:unknown){return e instanceof Error?e.message:'The action could not be completed. Your saved records were not intentionally removed.'}
 function stamp(s:string){return new Date(s).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}
-function focusHeading(){requestAnimationFrame(()=>document.querySelector<HTMLElement>('main h1')?.focus())}
+function focusAfterAction(selector:string,scroll=false){const prior=document.activeElement;requestAnimationFrame(()=>{if(document.activeElement!==prior&&document.activeElement!==document.body)return;const target=document.querySelector<HTMLElement>(selector);if(scroll)target?.scrollIntoView({block:'center'});target?.focus()})}
+function focusHeading(){focusAfterAction('main h1')}
 function updateStatus(){const n=document.querySelector('#save-status');if(n){n.textContent=saveStatus;n.className='save-status'+(dirty?' unsaved':'')}}
 function changed(){dirty=true;const invalid=view==='editor'&&validateGuide(draft).length>0;saveStatus=invalid?'Not saved — save the draft locally. Correct its routes before exporting.':'Not saved — save your changes or export a backup.';updateStatus();if(view==='editor'){const start=document.querySelector<HTMLButtonElement>('#start-draft');if(start)start.disabled=invalid}}
 function field(label:string,id:string,value:string,onChange:(s:string)=>void,max:number,multiline=false){
@@ -55,18 +58,18 @@ async function library(){
  if(dirty&&!confirm('Leave this view with unsaved changes? Save locally or export valid work before leaving if you need to keep it. Saved records remain.'))return;
  view='library';draft=undefined;currentRun=undefined;savedRun=undefined;dirty=false;saveStatus='';issues=[];error='';await refresh();render();focusHeading();
 }
-function edit(g?:Guide,copy=false){
+function edit(g?:Guide,copy=false,fresh=false,focus='main h1'){
  const base=g?clone(g):{id:crypto.randomUUID(),revisionId:crypto.randomUUID(),title:'Untitled guide',description:'',startCardId:'first',updatedAt:new Date().toISOString(),cards:[{id:'first',title:'First card',body:'Describe the next step.',kind:'terminal' as const,choices:[],outcome:'Complete'}]};
- expectedRevision=g&&!copy?g.revisionId:undefined;
+ expectedRevision=g&&!copy&&!fresh?g.revisionId:undefined;
  if(copy){base.id=crypto.randomUUID();base.revisionId=crypto.randomUUID();base.title=(base.title+' — copy').slice(0,100)}
- draft=base;view='editor';dirty=!g||copy;saveStatus=dirty?'Not saved — save your new guide.':'Loaded saved guide.';error='';issues=[];render();focusHeading();
+ draft=base;view='editor';dirty=!g||copy||fresh;saveStatus=dirty?'Not saved — save your new guide.':'Loaded saved guide.';error='';issues=[];render();focusAfterAction(focus);
 }
 async function saveDraft(asCopy=false):Promise<boolean>{
  if(!draft)return false;
- const candidate=clone(draft);if(asCopy){candidate.id=crypto.randomUUID();expectedRevision=undefined}
+ const candidate=clone(draft),expected=asCopy?undefined:expectedRevision;if(asCopy)candidate.id=crypto.randomUUID();
  candidate.revisionId=crypto.randomUUID();candidate.updatedAt=new Date().toISOString();
  saveStatus='Saving…';updateStatus();
- try{await store.saveGuide(candidate,expectedRevision);draft=candidate;expectedRevision=candidate.revisionId;dirty=false;saveStatus='Saved on this device · '+stamp(candidate.updatedAt);error='';guides=guides.filter(g=>g.id!==candidate.id);guides.push(clone(candidate));render();return true}
+ try{await store.saveGuide(candidate,expected);draft=candidate;expectedRevision=candidate.revisionId;dirty=false;saveStatus='Saved on this device · '+stamp(candidate.updatedAt);error='';guides=guides.filter(g=>g.id!==candidate.id);guides.push(clone(candidate));render();return true}
  catch(e){dirty=true;error=message(e);saveStatus=validateGuide(draft).length?'Not saved — keep this draft open and retry storage. Correct its routes before exporting.':'Not saved — keep editing, retry or export a backup.';render();return false}
 }
 async function persistRun(){
@@ -83,11 +86,12 @@ async function transition(kind:'choose'|'back',id=''){if(!currentRun)return;curr
 function download(p:Package,name:string){const data=encodePackage(p),blob=new Blob([data],{type:'application/json'}),url=URL.createObjectURL(blob),a=el('a',{href:url,download:name});a.click();setTimeout(()=>URL.revokeObjectURL(url),2000)}
 function exportGuide(g:Guide){download({kind:'stackback.guide',schemaVersion:1,guide:requireGuide(g)},'stackback-guide.json')}
 function exportRun(){if(currentRun)download({kind:'stackback.handoff',schemaVersion:1,run:currentRun},'stackback-handoff.json')}
+function exportBrief(){if(!currentRun)return;const blob=new Blob([handoffBrief(currentRun,!dirty)],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=el('a',{href:url,download:'stackback-handoff-brief.txt'});a.click();setTimeout(()=>URL.revokeObjectURL(url),2000)}
 function render(){
  const file=el('input',{type:'file',accept:'.json,application/json',class:'file-control','aria-label':'Select a StackBack file'});
  file.onchange=async()=>{const f=file.files?.[0];if(!f)return;try{if(f.size>MAX_FILE_BYTES)throw new Error('File is larger than 1 MiB.');const parsed=parsePackage(await f.text());openImport(parsed)}catch(e){error=message(e);render()}finally{file.value=''}};
  const nav=el('nav',{'aria-label':'Main navigation',class:'topnav'},el('span',{class:'offline','data-testid':'offline-status'},offline),button('Library',library,'tertiary'),button('Import a file',()=>file.click(),'tertiary'));
- if(waiting)nav.append(button('Apply available update',applyUpdate,'tertiary'));
+ if(waiting)nav.append(updateControl());
  const header=el('header',{},el('div',{class:'topbar'},el('div',{class:'brand'},el('span',{class:'monogram','aria-hidden':'true'},'SB'),el('span',{},'STACKBACK')),nav));
  const main=el('main',{class:'main',id:'main'});
  if(error)main.append(el('div',{class:'banner',role:'alert'},error));
@@ -100,23 +104,24 @@ function render(){
 function heading(title:string){return el('h1',{tabindex:'-1'},title)}
 function renderLibrary(main:HTMLElement){
  main.append(el('div',{class:'eyebrow'},'Your local workbench'),heading('Pick up the thread.'),el('p',{class:'intro'},'Build a guide. Follow the route. Hand over the context, not the guesswork.'),el('p',{class:'hint'},'Guides and sessions stay in this browser. Export files as backups; browser clearing or eviction can remove local data. Sample content is fictional.'));
+ main.append(el('section',{class:'panel practice'},el('h2',{},'Practice a shift change'),el('p',{},'A visitor is waiting when the desk assignment changes. What did the earlier shift follow, what was corrected, and who confirms the instructions now?'),button('Create shift-change practice guide',()=>edit(practiceGuide(),false,true),'secondary'),el('details',{},el('summary',{},'Show practice steps'),el('ol',{},el('li',{},'Create the practice guide, save and start it. Choose Textile desk, go back and choose Ask coordinator. Add a made-up waiting-task note.'),el('li',{},'Return to Library and edit Card 3: change Blue table to Green table. Save, then resume the earlier session and compare versions.'),el('li',{},'Export a readable brief for a recipient with a text viewer, or JSON to resume in a prepared StackBack app. Confirm current instructions with the guide owner.'))),el('p',{class:'hint'},'Creates an unsaved fictional draft. No volunteer benefit, time saving or participant result has been measured.')));
  main.append(el('div',{class:'section-head'},el('h2',{},'Guide library'),button('Create guide',()=>edit(),'primary')));
  const grid=el('div',{class:'grid'});
  for(const g of guides){const invalid=validateGuide(g).length>0;const article=el('article',{class:'panel guide'},el('div',{},el('span',{class:'tag'},invalid?'Draft needs correction':g.id===SAMPLE_ID?'Fictional sample':'Your guide')),el('h2',{},g.title||'Untitled guide'),el('p',{},g.description||'A local branching guide.'),el('div',{class:'metadata'},g.cards.length+' cards · revision '+g.revisionId.slice(0,8)));
  const start=button('Start guide',()=>begin(g),'primary');start.disabled=invalid;
   const explore=button('Explore stack',()=>{stackGuide=clone(g);stackCardId=g.startCardId;view='stack';saveStatus='';error='';render();focusHeading()},'tertiary');explore.disabled=invalid;
   article.append(el('div',{class:'actions'},start,button(g.id===SAMPLE_ID?'Edit a copy':'Edit guide',()=>edit(g,g.id===SAMPLE_ID)),explore));
- if(g.id!==SAMPLE_ID)article.append(el('div',{class:'actions metadata'},button('Duplicate guide',()=>edit(g,true),'tertiary'),button('Export guide',()=>exportGuide(g),'tertiary')));
+ if(g.id!==SAMPLE_ID)article.append(el('div',{class:'actions metadata'},button('Duplicate guide',()=>edit(g,true),'tertiary'),button('Export guide',()=>exportGuide(g),'tertiary'),button('Delete guide locally',async()=>{if(!confirm('Delete local guide “'+g.title+'”? Saved sessions keep their snapshots. Export a valid guide first if needed; incomplete drafts have no portable export.'))return;await store.removeGuide(g);error='';await refresh();render()},'tertiary')));
  grid.append(article)}
  main.append(grid,el('div',{class:'section-head'},el('h2',{},'Saved sessions'),el('span',{class:'muted'},'Return to the exact guide snapshot')));
  if(!runs.length)main.append(el('div',{class:'empty'},'No saved sessions yet. Start a guide to keep your place on this device.'));
-  else{const sessionGrid=el('div',{class:'grid'});for(const r of [...runs].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))){const state=replay(r),article=el('article',{class:'panel'},el('span',{class:'tag'},r.sourceRunId?'Imported copy':'Local session'),el('h3',{},r.guideSnapshot.title),el('p',{},state.current.title),el('p',{class:'metadata'},stamp(r.updatedAt)+' · '+r.id.slice(0,8)),button('Resume session',()=>resume(r),'primary'));if(portableIssue(r))article.append(el('span',{class:'tag amber'},'Over-capacity — shorten note to export'),el('p',{class:'hint'},'Your stored record is retained and can be resumed to shorten its note.'));sessionGrid.append(article)}main.append(sessionGrid)}
+  else{const sessionGrid=el('div',{class:'grid'});for(const r of [...runs].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))){const state=replay(r),article=el('article',{class:'panel'},el('span',{class:'tag'},r.sourceRunId?'Session copy':'Local session'),el('h3',{},r.guideSnapshot.title),el('p',{},state.current.title),el('p',{class:'metadata'},stamp(r.updatedAt)+' · '+r.id.slice(0,8)),el('div',{class:'actions'},button('Resume session',()=>resume(r),'primary'),button('Delete session locally',async()=>{if(!confirm('Delete this local session of “'+r.guideSnapshot.title+'”? Its note and history will be removed from this browser. Export a handoff first if needed.'))return;await store.removeRun(r);error='';await refresh();render()},'tertiary')));if(portableIssue(r))article.append(el('span',{class:'tag amber'},'Over-capacity — shorten note to export'),el('p',{class:'hint'},'Your stored record is retained and can be resumed to shorten its note.'));sessionGrid.append(article)}main.append(sessionGrid)}
  main.append(el('details',{class:'panel',style:'margin-top:28px'},el('summary',{},'How local handoffs work'),el('ol',{class:'help-list'},el('li',{},'The guide author defines the route. StackBack follows those choices deterministically.'),el('li',{},'Each session keeps an immutable guide snapshot. Later guide edits do not rewrite an existing session.'),el('li',{},'Export a handoff file, transfer it yourself, then preview and import it as a new local copy.'),el('li',{},'Files are editable, unsigned and unencrypted. Avoid personal or sensitive notes.'),el('li',{},'Offline access needs one completed online preparation. Export backups before clearing browser data.'))));
 }
 function renderStack(main:HTMLElement){
  if(!stackGuide)return;const g=stackGuide,current=g.cards.find(c=>c.id===stackCardId)??g.cards[0];
- const show=(id:string)=>{stackCardId=id;render();requestAnimationFrame(()=>document.querySelector<HTMLElement>('#stack-card-title')?.focus())};
- main.append(el('div',{class:'eyebrow'},'Linked-card workbench'),heading(g.title+' · card stack'),el('p',{class:'hint'},'Stack preview — no session is being recorded.'),el('div',{class:'actions'},button('Start this stack',()=>begin(g),'primary'),button('Edit this stack',()=>{edit(g,g.id===SAMPLE_ID);requestAnimationFrame(()=>document.getElementById('title-'+current.id)?.focus())},'secondary')));
+ const show=(id:string)=>{stackCardId=id;render();focusAfterAction('#stack-card-title')};
+ main.append(el('div',{class:'eyebrow'},'Linked-card workbench'),heading(g.title+' · card stack'),el('p',{class:'hint'},'Stack preview — no session is being recorded.'),el('div',{class:'actions'},button('Start this stack',()=>begin(g),'primary'),button('Edit this stack',()=>edit(g,g.id===SAMPLE_ID,false,'#title-'+current.id),'secondary')));
  const paper=el('section',{class:'paper stack-preview','aria-labelledby':'stack-card-title'},el('span',{class:'tag'},current.kind==='terminal'?'Outcome card':'Linked card'),el('h2',{id:'stack-card-title',tabindex:'-1'},current.title),el('p',{},current.body));
  for(const choice of current.choices)paper.append(button('Follow: '+choice.label,()=>show(choice.to),'choice'));
  if(current.kind==='terminal')paper.append(el('p',{class:'complete'},current.outcome));
@@ -134,7 +139,7 @@ function renderEditor(main:HTMLElement){
  const body=el('div',{class:'editor-grid'}),form=el('div',{}),side=el('aside',{class:'panel validation','aria-label':'Guide validation'});
   form.append(el('div',{class:'panel'},field('Guide title','guide-title',d.title,v=>d.title=v,100),field('Guide description','guide-description',d.description,v=>d.description=v,500,true),picker('Start card','start-card',d.cards.map(c=>[c.id,c.title]),d.startCardId,v=>d.startCardId=v)));
   const map=el('details',{class:'panel'},el('summary',{},'Card stack map'));
-  for(const {card,depth}of stackOutline(d))map.append(button((depth<0?'Unreachable':('Level '+(depth+1)))+' · '+(card.title||'Untitled card'),()=>{const field=document.getElementById('title-'+card.id);field?.scrollIntoView({block:'center'});field?.focus()},'tertiary'));
+  for(const {card,depth}of stackOutline(d))map.append(button((depth<0?'Unreachable':('Level '+(depth+1)))+' · '+(card.title||'Untitled card'),()=>focusAfterAction('#title-'+card.id,true),'tertiary'));
   form.append(map);
  d.cards.forEach((c,index)=>{
   const card=el('section',{class:'card-editor',id:'card-'+c.id},el('div',{class:'card-head'},el('h2',{},'Card '+(index+1)),button('Remove card '+(index+1),()=>{if(confirm('Remove this draft card? Links to it will need correction.')){d.cards=d.cards.filter(x=>x.id!==c.id);changed();render()}},'tertiary')));
@@ -156,13 +161,13 @@ function renderEditor(main:HTMLElement){
 }
 function renderRunner(main:HTMLElement){
  if(!currentRun)return;const r=currentRun,{path,current}=replay(r),g=r.guideSnapshot;
-  main.append(el('div',{class:'revision'},el('span',{class:'tag'},r.sourceRunId?'Imported session copy':'Guided session'),el('span',{},g.title+' · snapshot '+g.revisionId.slice(0,8))),el('div',{class:'back-row actions'},button('Previous card',()=>transition('back'),'secondary'),button('Export handoff',exportRun,'tertiary')));
+  main.append(el('div',{class:'revision'},el('span',{class:'tag'},r.sourceRunId?'Session copy':'Guided session'),el('span',{},g.title+' · snapshot '+g.revisionId.slice(0,8))),el('div',{class:'back-row actions'},button('Previous card',()=>transition('back'),'secondary'),button('Export handoff',exportRun,'tertiary'),button('Export readable brief (.txt)',exportBrief,'tertiary')),el('p',{class:'hint'},'JSON resumes in StackBack. The text brief can be read without the app. A frozen snapshot records what was followed; confirm current instructions with the guide owner.'));
   if(dirty)main.append(button('Save session as new copy',saveSessionCopy,'tertiary'));
   if(portableIssue(r)&&!error)main.append(el('div',{class:'banner',role:'alert'},'This session is retained locally but exceeds the portable handoff limit. Shorten its note and save before exporting.'));
   const latest=guides.find(guide=>guide.id===g.id);
   if(latest&&latest.revisionId!==g.revisionId){
    const diff=compareStacks(g,latest),comparison=el('details',{class:'panel version-comparison','aria-label':'Guide version comparison'},el('summary',{},'Compare guide versions'),el('p',{},'This session remains on snapshot '+g.revisionId.slice(0,8)+'. Library revision '+latest.revisionId.slice(0,8)+' is separate.'));
-   if(diff.guideDetailsChanged)comparison.append(el('p',{},'Guide title, description or start card changed.'));
+   if(diff.guideDetailsChanged){const metadata=el('section',{'aria-label':'Guide metadata changes'});for(const field of guideMetadataChanges(g,latest))metadata.append(el('h3',{},field.name),el('p',{},'Session snapshot: '+(field.before||'(Empty)')),el('p',{},'Current library: '+(field.after||'(Empty)')));comparison.append(metadata)}
    for(const change of diff.changes){const item=el('section',{},el('h3',{},change.kind+': '+(change.after?.title??change.before?.title)));for(const [label,card,guide]of [['Session snapshot',change.before,g],['Current library',change.after,latest]]as const)if(card)item.append(el('p',{},label+': '+card.title+' · '+card.body+' · '+(card.outcome??card.choices.map(ch=>ch.label+' → '+(guide.cards.find(c=>c.id===ch.to)?.title??'Removed card')).join('; '))));comparison.append(item)}
    if(!diff.guideDetailsChanged&&!diff.changes.length)comparison.append(el('p',{},'The revision changed; card contents are unchanged.'));
    main.append(el('p',{class:'version-notice'},'Library guide has a newer revision.'),comparison);
@@ -201,11 +206,13 @@ let reloading=false;
 function reloadUpdated(){if(reloading)return;reloading=true;location.reload()}
 async function applyUpdate(){
  if(dirty){error='Save your pending work before applying the update. Export a backup if storage is unavailable.';render();return}
- const worker=waiting;if(!worker)return;applyingUpdate=true;
+ const worker=(await navigator.serviceWorker.getRegistration())?.waiting;waiting=worker??undefined;if(!worker){syncOffline();return}applyingUpdate=true;
  try{await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('The update did not activate. Your saved session remains available. Reload online to retry.')),10000);const check=()=>{if(worker.state==='activated'){clearTimeout(timer);resolve()}else if(worker.state==='redundant'){clearTimeout(timer);reject(new Error('The update could not activate. Your saved session remains available.'))}};worker.addEventListener('statechange',check);worker.postMessage('APPLY_UPDATE');check()});reloadUpdated()}
  catch(e){applyingUpdate=false;throw e}
 }
-function syncOffline(){const n=document.querySelector('[data-testid=offline-status]');if(n)n.textContent=offline;if(waiting&&!busy&&view==='library')render()}
+function updateControl(){const n=button('Apply available update',applyUpdate,'tertiary');n.id='apply-update';return n}
+function syncUpdateControl(){const control=document.getElementById('apply-update');if(!waiting)control?.remove();else if(!control&&!busy)document.querySelector('.topnav')?.append(updateControl())}
+function syncOffline(){const n=document.querySelector('[data-testid=offline-status]');if(n)n.textContent=offline;if('serviceWorker'in navigator)void navigator.serviceWorker.getRegistration().then(reg=>{waiting=reg?.waiting??undefined;syncUpdateControl()},()=>{waiting=undefined;syncUpdateControl()})}
 function confirmOffline(worker:ServiceWorker){return new Promise<void>((resolve,reject)=>{
  const channel=new MessageChannel(),timer=setTimeout(()=>{channel.port1.close();reject(new Error('Offline cache verification timed out.'))},7000);
  channel.port1.onmessage=event=>{clearTimeout(timer);channel.port1.close();event.data?.ready===true?resolve():reject(new Error('The offline shell could not be prepared.'))};
@@ -215,14 +222,14 @@ async function prepareOffline(){
  if(!('serviceWorker'in navigator)){offline='Offline access unavailable';syncOffline();return}
  try{
    const reg=await navigator.serviceWorker.register(new URL('sw.js',document.baseURI));
-  function update(){if(reg.waiting){waiting=reg.waiting;syncOffline()}}
+  function update(){syncOffline()}
   const ready=new Promise<void>((resolve,reject)=>{
    if(reg.active){resolve();return}
    const watch=()=>{const worker=reg.installing||reg.waiting;if(!worker){if(reg.active)resolve();return}const check=()=>{if(worker.state==='activated')resolve();if(worker.state==='redundant')reject(new Error('Offline installation failed.'))};worker.addEventListener('statechange',check);check()};
    watch();reg.addEventListener('updatefound',watch);
    setTimeout(()=>reject(new Error('Offline preparation timed out.')),15000);
   });
-  update();reg.addEventListener('updatefound',()=>reg.installing?.addEventListener('statechange',update));
+  update();reg.waiting?.addEventListener('statechange',update);reg.addEventListener('updatefound',()=>reg.installing?.addEventListener('statechange',update));
    await ready;if(!reg.active)throw new Error('No active offline worker.');await confirmOffline(reg.active);offline='Offline ready';syncOffline();
    navigator.serviceWorker.addEventListener('controllerchange',()=>{if(applyingUpdate)reloadUpdated();else if(navigator.serviceWorker.controller){offline='Preparing offline access';syncOffline();void confirmOffline(navigator.serviceWorker.controller).then(()=>{offline='Offline ready';syncOffline()},()=>{offline='Offline not prepared — reload online to retry';syncOffline()})}});
  }catch{offline='Offline not prepared — reload online to retry';syncOffline()}

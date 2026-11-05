@@ -1,0 +1,33 @@
+STACKBACK — READABLE HANDOFF BRIEF
+This readable brief cannot be imported or resumed in StackBack. Use the JSON handoff for continuation.
+It can be read in a text viewer without installing or preparing StackBack.
+Editable, unsigned and unencrypted. Use benign notes only; this is not an authenticated audit log.
+Confirm current instructions with the guide owner. A snapshot records what was followed, not what is currently approved.
+
+Save status: SAVED CHECKPOINT
+Guide: Fictional shift handoff
+Snapshot revision: 672e7d6b-72f2-401b-bc0e-9a1ac13fb428
+Session: 70f3d587-1e4e-4b7b-9258-e2d33115c254
+Session updated: 2026-11-05T04:49:12.168Z
+
+CURRENT STEP
+Current card: Coordinator review
+Keep the earlier choices and current note. Ask the coordinator which station instructions apply now; a frozen snapshot alone does not confirm current instructions.
+Outcome: Coordinator must confirm the current station before continuing.
+
+CURRENT NOTE
+Fictional: waiting visitor; earlier Textile choice was corrected. Coordinator must confirm the current station.
+
+ACTIVE PATH
+1. Welcome-desk shift change
+2. Which desk was selected?
+3. Coordinator review
+
+CHOICE AND CORRECTION HISTORY
+1. Review waiting handoff → Which desk was selected? · 2026-11-05T04:49:11.836Z
+2. Textile desk → Textile desk — first shift · 2026-11-05T04:49:11.903Z
+3. Previous card → Which desk was selected? · 2026-11-05T04:49:12.001Z
+4. Ask coordinator → Coordinator review · 2026-11-05T04:49:12.069Z
+
+History includes corrected choices. Current note edits are not a complete note audit.
+Only this frozen snapshot is represented; later library changes are not included.

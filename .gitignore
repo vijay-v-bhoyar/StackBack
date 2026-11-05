@@ -24,3 +24,4 @@ playwright-report/
 # Private repair evidence and browser diagnostics
 /.loop/
 /debug.log
+/.playwright-mcp/

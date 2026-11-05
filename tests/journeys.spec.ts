@@ -1,6 +1,6 @@
 import {test,expect} from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import {readFile} from 'node:fs/promises';
+import {updateServer} from './update-server';
 
 test('opens the native import chooser with mouse and keyboard',async({page})=>{
  const fixture={kind:'stackback.guide',schemaVersion:1,guide:{id:'11111111-1111-4111-8111-111111111111',revisionId:'22222222-2222-4222-8222-222222222222',title:'Chooser integration fixture',description:'Original synthetic input',startCardId:'end',updatedAt:'2026-11-03T12:00:00.000Z',cards:[{id:'end',title:'Finish',body:'Fictional routing only',kind:'terminal',choices:[],outcome:'Done'}]}};
@@ -130,9 +130,11 @@ test('renders imported HTML as literal text without execution',async({page})=>{
  await page.goto('/');await page.locator('input[type=file]').setInputFiles({name:'literal.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({kind:'stackback.guide',schemaVersion:1,guide}))});await page.getByRole('button',{name:'Import as new copy'}).click();await page.getByRole('button',{name:'Start this guide'}).click();await expect(page.getByText(hostile,{exact:true})).toBeVisible();expect(await page.evaluate(()=>Object.hasOwn(window,'__stackbackXss'))).toBe(false);await expect(page.locator('main img')).toHaveCount(0);
 });
 test('keeps an unsaved session intact while a newer worker waits',async({page,context})=>{
- await page.goto('/');await expect(page.getByTestId('offline-status')).toHaveText('Offline ready');await page.getByRole('button',{name:'Start guide',exact:true}).first().click();await page.getByRole('button',{name:'Find a station',exact:true}).click();await page.getByLabel('Current handoff note').fill('Unsaved update-protection note');
- const worker=await readFile('dist/sw.js','utf8');await context.route('**/sw.js',r=>r.fulfill({status:200,contentType:'application/javascript',body:worker+'\n// synthetic next-worker fixture'}));await page.evaluate(async()=>{const reg=await navigator.serviceWorker.getRegistration();await reg!.update()});await page.waitForFunction(async()=>!!(await navigator.serviceWorker.getRegistration())?.waiting);
+ const hosted=await updateServer();try{
+ await page.goto(hosted.url);await expect(page.getByTestId('offline-status')).toHaveText('Offline ready');await page.getByRole('button',{name:'Start guide',exact:true}).first().click();await page.getByRole('button',{name:'Find a station',exact:true}).click();await page.getByLabel('Current handoff note').fill('Unsaved update-protection note');
+ hosted.publishNext();await page.evaluate(async()=>{const reg=await navigator.serviceWorker.getRegistration();await reg!.update()});await expect.poll(()=>page.evaluate(async()=>!!(await navigator.serviceWorker.getRegistration())?.waiting)).toBe(true);expect(hosted.versions).toContain(2);
  await expect(page.getByLabel('Current handoff note')).toHaveValue('Unsaved update-protection note');await expect(page.getByRole('status')).toContainText('Not saved');
- await page.getByRole('button',{name:'Save note'}).click();await expect(page.getByRole('status')).toContainText('Saved');await page.getByRole('button',{name:'Apply available update'}).click();console.log('Update activation diagnostic',await page.evaluate(async()=>{const r=await navigator.serviceWorker.getRegistration();return {active:r?.active?.state,waiting:r?.waiting?.state,controller:navigator.serviceWorker.controller?.state,status:document.querySelector('[role=status]')?.textContent}}));await page.getByRole('heading',{name:'Pick up the thread.'}).waitFor();await page.getByRole('button',{name:'Resume session'}).first().click();await expect(page.getByLabel('Current handoff note')).toHaveValue('Unsaved update-protection note');
+ await page.getByRole('button',{name:'Save note'}).click();await expect(page.getByRole('status')).toContainText('Saved');await page.getByRole('button',{name:'Apply available update'}).click();await page.getByRole('heading',{name:'Pick up the thread.'}).waitFor();await page.getByRole('button',{name:'Resume session'}).first().click();await expect(page.getByLabel('Current handoff note')).toHaveValue('Unsaved update-protection note');
+ }finally{await hosted.close()}
 });
 

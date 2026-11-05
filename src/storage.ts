@@ -18,8 +18,20 @@ export class Store {
  async saveGuide(g:Guide,expected?:string):Promise<void>{
   const db=await this.open();return new Promise((resolve,reject)=>{
    const tx=db.transaction('guides','readwrite'),s=tx.objectStore('guides'),q=s.get(g.id);let conflict=false;
-   q.onsuccess=()=>{const current=q.result as Guide|undefined;if(current&&current.revisionId!==expected){conflict=true;tx.abort()}else s.put(clone(g))};
+   q.onsuccess=()=>{const current=q.result as Guide|undefined;if(expected===undefined?current!==undefined:!current||current.revisionId!==expected){conflict=true;tx.abort()}else s.put(clone(g))};
    tx.oncomplete=()=>resolve();tx.onabort=tx.onerror=()=>reject(new StorageError(conflict?'This guide changed in another tab. Reload the library or save as a new copy.':'Guide was not saved. Browser storage may be full or unavailable. Keep editing or export a backup.'));
+  });
+ }
+ async removeGuide(g:Guide):Promise<void>{return this.remove('guides',g)}
+ async removeRun(r:Run):Promise<void>{return this.remove('runs',r)}
+ private async remove(name:'guides'|'runs',expected:Guide|Run):Promise<void>{
+  const db=await this.open();return new Promise((resolve,reject)=>{
+   const tx=db.transaction(name,'readwrite'),s=tx.objectStore(name),q=s.get(expected.id);let conflict=false;
+   q.onsuccess=()=>{const current=q.result as Guide|Run|undefined;
+    const matches=current&&(name==='guides'?(current as Guide).revisionId===(expected as Guide).revisionId:JSON.stringify(current)===JSON.stringify(expected));
+    if(!matches){conflict=true;tx.abort();return}s.delete(expected.id);
+   };
+   tx.oncomplete=()=>resolve();tx.onabort=tx.onerror=()=>reject(new StorageError(conflict?'This record changed or was removed in another tab. Reload the library before deleting.':'The record was not deleted. Browser storage may be unavailable. Reload and retry.'));
   });
  }
  async saveRun(r:Run,expected?:Run):Promise<void>{

@@ -18,3 +18,9 @@ export function compareStacks(snapshot:Guide,current:Guide){
  const guideDetailsChanged=JSON.stringify([snapshot.title,snapshot.description,snapshot.startCardId])!==JSON.stringify([current.title,current.description,current.startCardId]);
  return {guideDetailsChanged,changes};
 }
+
+export function guideMetadataChanges(snapshot:Guide,current:Guide){
+ const start=(g:Guide)=>(g.cards.find(c=>c.id===g.startCardId)?.title??'Missing card')+' ('+g.startCardId+')';
+ const fields=[['Guide title',snapshot.title,current.title],['Description',snapshot.description,current.description],['Start card',start(snapshot),start(current)]];
+ return fields.filter(([,before,after])=>before!==after).map(([name,before,after])=>({name,before,after}));
+}

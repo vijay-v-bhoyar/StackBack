@@ -2,3 +2,5 @@
 
 
 .stack-preview{margin:26px 0 32px;max-width:800px}.stack-index{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:20px}.stack-node{border:1px solid #b8c5b1;border-radius:9px;background:#fffef9;box-shadow:4px 5px 0 #dce0d1;padding:20px;min-width:0}.stack-node.selected{border:2px solid #174e44;background:#edf3e9}.stack-node>button{display:block;width:100%;text-align:left;margin:12px 0}.stack-node .hint{overflow-wrap:anywhere}.version-notice{font-weight:700;color:#174e44}.version-comparison{margin:18px 0 26px}.version-comparison section{border-top:1px solid #c8d0c0;margin-top:16px;padding-top:12px}.version-comparison p{overflow-wrap:anywhere}.editor-grid details.panel>button{margin:5px;max-width:calc(100% - 10px);text-align:left}
+
+.practice{margin-bottom:24px}.practice>button{margin-bottom:14px}.practice details{margin:8px 0}.practice li{margin-bottom:8px}
