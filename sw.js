@@ -1,5 +1,5 @@
-const CACHE_NAME="stackback-b4a7ac8c4ec3a80e";
-const ASSETS=["./assets/index-D3_BGEmL.css","./assets/index-DdzLxaxq.js","./index.html"];
+const CACHE_NAME="stackback-fca7b7558113847e";
+const ASSETS=["./assets/index-B8wel0ke.js","./assets/index-BNn7cviB.css","./index.html"];
 /* Build injects CACHE_NAME and ASSETS. No user files or remote resources are cached. */
 const shellURLs=ASSETS.map(asset=>new URL(asset,self.location.href).href);
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(shellURLs))));
