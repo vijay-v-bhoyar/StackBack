@@ -60,6 +60,8 @@ Imports are bounded to 1 MiB, schema v1, 100 cards, six choices per card, 1000 h
 
 A session's guide snapshot never follows later author edits. The version comparison makes library changes visible. Imports create distinct local copies. A stale session tab cannot replace newer stored work: keep its alternative as a new session copy. New saved sessions and imports must fit the canonical 1 MiB JSON limit. Older locally stored over-capacity records remain available for note-shortening recovery. A newer worker waits for an explicit update; save first. Save failure leaves in-memory work marked **Not saved**. Valid work can be exported; an invalid draft must remain open until it can be saved locally or corrected. Changing browser origins does not transfer data automatically.
 
+If an older cached version reloads after **Apply available update** but still lacks the readable-brief button, save your work and export a JSON handoff, close all StackBack tabs, then reopen the public app. Close only after a successful save/export; otherwise keep the tab open and copy needed unsaved text. Keep the backup; it can be previewed/imported into the current version if needed. Do not clear browser storage as an upgrade step. A retained r6-client check reproduced that old update-button limitation; fresh r7 access and import of the actual pre-update handoff were verified separately.
+
 ## Verify
 ```sh
 npm run typecheck
