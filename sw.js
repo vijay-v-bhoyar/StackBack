@@ -1,8 +1,10 @@
-const CACHE_NAME="stackback-fca7b7558113847e";
+const CACHE_NAME="stackback-3f3b121a6e9e2fa0";
 const ASSETS=["./assets/index-B8wel0ke.js","./assets/index-BNn7cviB.css","./index.html"];
 /* Build injects CACHE_NAME and ASSETS. No user files or remote resources are cached. */
 const shellURLs=ASSETS.map(asset=>new URL(asset,self.location.href).href);
-self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(shellURLs))));
+// Stable shell URLs must bypass the HTTP cache during installation and repair.
+const freshRequests=urls=>urls.map(url=>new Request(url,{cache:'reload'}));
+self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(freshRequests(shellURLs)))));
 self.addEventListener('activate',event=>event.waitUntil((async()=>{for(const k of await caches.keys())if(k.startsWith('stackback-')&&k!==CACHE_NAME)await caches.delete(k);await self.clients.claim()})()));
 self.addEventListener('message',event=>{
  if(event.data==='APPLY_UPDATE')self.skipWaiting();
@@ -10,7 +12,7 @@ self.addEventListener('message',event=>{
   try{
    const cache=await caches.open(CACHE_NAME);
    const missing=[];for(const url of shellURLs)if(!await cache.match(url))missing.push(url);
-   if(missing.length&&event.data==='PREPARE_CACHE')await cache.addAll(missing);
+   if(missing.length&&event.data==='PREPARE_CACHE')await cache.addAll(freshRequests(missing));
    let ready=true;for(const url of shellURLs)if(!await cache.match(url))ready=false;
    event.ports[0]?.postMessage({ready,cache:CACHE_NAME});
   }catch{event.ports[0]?.postMessage({ready:false,cache:CACHE_NAME})}
